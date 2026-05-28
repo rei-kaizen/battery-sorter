@@ -1,0 +1,21 @@
+{
+  "battery_events": {
+    "event_001": {
+      "type": "Li-ion",
+      "voltage": 3.82,
+      "magnetic": false,
+      "timestamp": 1718000000
+    },
+    "event_002": {
+      "type": "NiCd",
+      "voltage": 1.25,
+      "magnetic": true,
+      "timestamp": 1718000045
+    }
+  },
+  "session_totals": {
+    "Li-ion": 1,
+    "NiCd_NiMH": 1,
+    "Alkaline": 0
+  }
+}

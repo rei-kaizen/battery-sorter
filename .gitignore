@@ -1,0 +1,20 @@
+# Dependency directories
+ewaste-dashboard/node_modules/
+ewaste-dashboard/dist/
+ewaste-dashboard/dist-ssr/
+
+# Local env files
+ewaste-dashboard/*.local
+ewaste-dashboard/.env
+ewaste-dashboard/.env.*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# System Files
+.DS_Store
+Thumbs.db
