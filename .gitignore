@@ -18,3 +18,13 @@ pnpm-debug.log*
 # System Files
 .DS_Store
 Thumbs.db
+
+# Firebase local cache
+.firebase/
+
+# AI Agent folders
+.agents/
+skills-lock.json
+
+# Root dist if accidentally created
+/dist/

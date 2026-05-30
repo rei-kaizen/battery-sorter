@@ -3,9 +3,8 @@ import { ref, onMounted } from 'vue'
 import mqtt from 'mqtt'
 import { initializeApp } from 'firebase/app'
 import { getDatabase, ref as dbRef, push } from 'firebase/database'
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth'
+import { getAuth, onAuthStateChanged, signOut, signInWithEmailAndPassword } from 'firebase/auth'
 
-import LoginOverlay from './components/LoginOverlay.vue'
 import LiveVoltageChart from './components/LiveVoltageChart.vue'
 import BatteryBarChart from './components/BatteryBarChart.vue'
 import EventTable from './components/EventTable.vue'
@@ -29,6 +28,20 @@ const auth = getAuth(app)
 // Authentication state
 const isAuthenticated = ref(false)
 const isAuthReady = ref(false)
+const email = ref('')
+const password = ref('')
+const loginError = ref('')
+
+const handleLogin = async () => {
+  try {
+    loginError.value = ''
+    await signInWithEmailAndPassword(auth, email.value, password.value)
+    email.value = ''
+    password.value = ''
+  } catch (error) {
+    loginError.value = error.message
+  }
+}
 
 // Dashboard state
 const connectionStatus = ref('Connecting...')
@@ -132,7 +145,18 @@ const handleLogout = async () => {
   </div>
   
   <div v-else>
-    <LoginOverlay v-if="!isAuthenticated" />
+    <!-- Simple Login UI overlay -->
+    <div v-if="!isAuthenticated" class="login-overlay-container">
+      <div class="login-panel">
+        <h2>Admin Login</h2>
+        <div class="login-form">
+          <input type="email" v-model="email" placeholder="Email" class="auth-input" />
+          <input type="password" v-model="password" placeholder="Password" class="auth-input" />
+          <button @click="handleLogin" class="btn btn-primary">Log In</button>
+        </div>
+        <p v-if="loginError" class="error-msg">{{ loginError }}</p>
+      </div>
+    </div>
     
     <div v-else class="dashboard">
       <header class="header">
@@ -151,20 +175,20 @@ const handleLogout = async () => {
       </div>
 
       <div class="grid-container">
-        <!-- Top Row: Charts -->
-        <div class="grid-item">
-          <LiveVoltageChart :voltageData="voltageData" :labels="voltageLabels" />
-        </div>
-        <div class="grid-item">
-          <BatteryBarChart :counts="chemistryCounts" />
-        </div>
-        
-        <!-- Bottom Row: Event Table -->
-        <div class="grid-item full-width">
-          <EventTable :events="events" />
-        </div>
+      <!-- Top Row: Charts -->
+      <div class="grid-item">
+        <LiveVoltageChart :voltageData="voltageData" :labels="voltageLabels" />
+      </div>
+      <div class="grid-item">
+        <BatteryBarChart :counts="chemistryCounts" />
+      </div>
+      
+      <!-- Bottom Row: Event Table -->
+      <div class="grid-item full-width">
+        <EventTable :events="events" />
       </div>
     </div>
+  </div>
   </div>
 </template>
 
@@ -303,6 +327,59 @@ body {
 
 .full-width {
   grid-column: 1 / -1;
+}
+
+.login-overlay-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  background-color: #0f172a;
+}
+
+.login-panel {
+  background: #1e293b;
+  padding: 40px;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+  border: 1px solid #334155;
+  text-align: center;
+  width: 100%;
+  max-width: 350px;
+}
+
+.login-panel h2 {
+  margin-top: 0;
+  margin-bottom: 25px;
+  font-size: 1.5em;
+  color: #f8fafc;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.auth-input {
+  padding: 10px 15px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background-color: #0f172a;
+  color: #f8fafc;
+  font-size: 1em;
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: #38bdf8;
+}
+
+.error-msg {
+  color: #ef4444;
+  margin-top: 10px;
+  font-size: 0.9em;
+  display: block;
 }
 
 @media (max-width: 768px) {
