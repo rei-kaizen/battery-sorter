@@ -32,11 +32,7 @@ const int ledR = 4;
 const int ledG = 16;
 const int ledB = 17;
 
-// --- LEDC channels for PWM (ESP32 native) ---
-#define CH_LED_R   0
-#define CH_LED_G   1
-#define CH_LED_B   2
-#define CH_MOTOR   3
+// --- PWM settings (ESP32 Arduino Core 3.x API) ---
 #define PWM_FREQ   5000
 #define PWM_RES    8    // 8-bit resolution: 0-255
 
@@ -121,9 +117,9 @@ void reconnect() {
 // ─────────────────────────────────────────────
 
 void setRGB(int r, int g, int b) {
-  ledcWrite(CH_LED_R, r);
-  ledcWrite(CH_LED_G, g);
-  ledcWrite(CH_LED_B, b);
+  ledcWrite(ledR, r);
+  ledcWrite(ledG, g);
+  ledcWrite(ledB, b);
 }
 
 void beltControl(bool state) {
@@ -131,11 +127,11 @@ void beltControl(bool state) {
   if (state) {
     digitalWrite(motorIN1, HIGH);
     digitalWrite(motorIN2, LOW);
-    ledcWrite(CH_MOTOR, 200);
+    ledcWrite(motorENA, 200);
   } else {
     digitalWrite(motorIN1, LOW);
     digitalWrite(motorIN2, LOW);
-    ledcWrite(CH_MOTOR, 0);
+    ledcWrite(motorENA, 0);
   }
 }
 
@@ -168,11 +164,11 @@ void setup() {
   pinMode(motorIN1,     OUTPUT);
   pinMode(motorIN2,     OUTPUT);
 
-  // LEDC (PWM) — replaces analogWrite for reliable ESP32 behavior
-  ledcSetup(CH_LED_R, PWM_FREQ, PWM_RES); ledcAttachPin(ledR,     CH_LED_R);
-  ledcSetup(CH_LED_G, PWM_FREQ, PWM_RES); ledcAttachPin(ledG,     CH_LED_G);
-  ledcSetup(CH_LED_B, PWM_FREQ, PWM_RES); ledcAttachPin(ledB,     CH_LED_B);
-  ledcSetup(CH_MOTOR,  PWM_FREQ, PWM_RES); ledcAttachPin(motorENA, CH_MOTOR);
+  // LEDC (PWM) — Core 3.x API: ledcAttach(pin, freq, resolution)
+  ledcAttach(ledR,     PWM_FREQ, PWM_RES);
+  ledcAttach(ledG,     PWM_FREQ, PWM_RES);
+  ledcAttach(ledB,     PWM_FREQ, PWM_RES);
+  ledcAttach(motorENA, PWM_FREQ, PWM_RES);
 
   // Servos
   servoA.attach(servoAPin); servoA.write(0);
