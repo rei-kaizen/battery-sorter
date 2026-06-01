@@ -1,9 +1,9 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import mqtt from 'mqtt'
 import { auth, db } from './firebase.js'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
-import { ref as dbRef, push, get, set } from 'firebase/database'
+import { ref as dbRef, push, get, set, onValue } from 'firebase/database'
 
 import LoginOverlay from './components/LoginOverlay.vue'
 import LiveVoltageChart from './components/LiveVoltageChart.vue'
@@ -37,6 +37,29 @@ const voltageData = ref([])
 const voltageLabels = ref([])
 const chemistryCounts = ref({ 'Li-ion': 0, 'Alkaline': 0, 'NiMH': 0 })
 const MAX_DATA_POINTS = 20
+const MIN_VALID_TS = new Date('2020-01-01').getTime()
+const voltageInitialized = ref(false)
+let eventsUnsubscribe = null
+
+// Conveyor control state
+const beltRunning = ref(false)
+const beltSpeedPct = ref(78)
+const sessionStartTime = ref(null)
+const sessionRuntime = ref(0)
+let runtimeInterval = null
+
+const formatRuntime = computed(() => {
+  const s = sessionRuntime.value
+  const m = Math.floor(s / 60)
+  const sec = s % 60
+  return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+})
+
+const lastDetectionTime = computed(() => {
+  const ts = events.value[0]?.timestamp
+  if (!ts || ts < MIN_VALID_TS) return '—'
+  return new Date(ts).toLocaleTimeString()
+})
 
 const fetchUserRole = async (uid, email) => {
   const roleRef = dbRef(db, `users/${uid}`)
@@ -49,6 +72,31 @@ const fetchUserRole = async (uid, email) => {
   }
 }
 
+const initEventsListener = () => {
+  if (eventsUnsubscribe) eventsUnsubscribe()
+  eventsUnsubscribe = onValue(dbRef(db, 'battery_events'), (snapshot) => {
+    const data = snapshot.val()
+    if (!data) {
+      events.value = []
+      chemistryCounts.value = { 'Li-ion': 0, 'Alkaline': 0, 'NiMH': 0 }
+      return
+    }
+    const all = Object.values(data)
+      .filter(e => e && e.timestamp)
+      .sort((a, b) => b.timestamp - a.timestamp)
+    events.value = all
+    const counts = { 'Li-ion': 0, 'Alkaline': 0, 'NiMH': 0 }
+    all.forEach(e => { if (e.type && counts[e.type] !== undefined) counts[e.type]++ })
+    chemistryCounts.value = counts
+    if (!voltageInitialized.value) {
+      const recent = [...all].reverse().slice(-MAX_DATA_POINTS)
+      voltageLabels.value = recent.map(e => new Date(e.timestamp).toLocaleTimeString())
+      voltageData.value = recent.map(e => e.voltage || 0)
+      voltageInitialized.value = true
+    }
+  })
+}
+
 onMounted(() => {
   onAuthStateChanged(auth, async (user) => {
     isAuthReady.value = true
@@ -56,13 +104,26 @@ onMounted(() => {
     currentUser.value = user
     if (user) {
       await fetchUserRole(user.uid, user.email)
+      initEventsListener()
       if (!mqttClient.value) connectMQTT()
     } else {
       userRole.value = 'viewer'
       activeTab.value = 'dashboard'
       mobileMenuOpen.value = false
+      if (eventsUnsubscribe) { eventsUnsubscribe(); eventsUnsubscribe = null }
+      voltageInitialized.value = false
+      events.value = []
+      voltageData.value = []
+      voltageLabels.value = []
+      chemistryCounts.value = { 'Li-ion': 0, 'Alkaline': 0, 'NiMH': 0 }
     }
   })
+})
+
+onUnmounted(() => {
+  if (runtimeInterval) clearInterval(runtimeInterval)
+  if (eventsUnsubscribe) eventsUnsubscribe()
+  if (mqttClient.value) mqttClient.value.end(true)
 })
 
 const connectMQTT = () => {
@@ -86,29 +147,58 @@ const connectMQTT = () => {
 }
 
 const handleIncomingData = (data) => {
-  events.value.unshift(data)
-  const timeLabel = new Date(data.timestamp).toLocaleTimeString()
-  voltageLabels.value.push(timeLabel)
-  voltageData.value.push(data.voltage || 0)
+  const ts = (!data.timestamp || data.timestamp < MIN_VALID_TS) ? Date.now() : data.timestamp
+  const normalized = { ...data, timestamp: ts }
+  voltageLabels.value.push(new Date(ts).toLocaleTimeString())
+  voltageData.value.push(normalized.voltage || 0)
   if (voltageLabels.value.length > MAX_DATA_POINTS) {
     voltageLabels.value.shift()
     voltageData.value.shift()
   }
-  if (data.type && chemistryCounts.value[data.type] !== undefined) {
-    chemistryCounts.value[data.type]++
-  }
-  push(dbRef(db, 'battery_events'), data)
+  push(dbRef(db, 'battery_events'), normalized)
 }
 
 const toggleBelt = (state) => {
   if (mqttClient.value?.connected) {
     mqttClient.value.publish('ewaste/control/belt', state)
+    if (state === 'ON') {
+      beltRunning.value = true
+      sessionStartTime.value = Date.now()
+      sessionRuntime.value = 0
+      if (runtimeInterval) clearInterval(runtimeInterval)
+      runtimeInterval = setInterval(() => {
+        sessionRuntime.value = Math.floor((Date.now() - sessionStartTime.value) / 1000)
+      }, 1000)
+    } else {
+      beltRunning.value = false
+      if (runtimeInterval) { clearInterval(runtimeInterval); runtimeInterval = null }
+    }
   } else {
     console.warn('MQTT not connected')
   }
 }
 
+const emergencyStop = () => {
+  beltRunning.value = false
+  if (runtimeInterval) { clearInterval(runtimeInterval); runtimeInterval = null }
+  if (mqttClient.value?.connected) {
+    mqttClient.value.publish('ewaste/control/belt', 'OFF')
+    mqttClient.value.publish('ewaste/control/estop', '1')
+  }
+}
+
+const onSpeedChange = () => {
+  if (mqttClient.value?.connected) {
+    mqttClient.value.publish('ewaste/control/speed', String(Math.round(beltSpeedPct.value * 255 / 100)))
+  }
+}
+
 const handleLogout = async () => {
+  if (runtimeInterval) { clearInterval(runtimeInterval); runtimeInterval = null }
+  beltRunning.value = false
+  sessionRuntime.value = 0
+  if (eventsUnsubscribe) { eventsUnsubscribe(); eventsUnsubscribe = null }
+  voltageInitialized.value = false
   if (mqttClient.value) {
     mqttClient.value.end(true)
     mqttClient.value = null
@@ -221,22 +311,76 @@ const setTab = (tab) => {
       <template v-if="activeTab === 'dashboard'">
         <!-- Admin-only conveyor controls -->
         <section v-if="isAdmin" class="control-section">
-          <div class="section-label">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
-              <path d="M4.93 4.93a10 10 0 0 0 0 14.14"/>
-            </svg>
-            Conveyor Control
+          <div class="cs-header">
+            <div class="section-label">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                <path d="M4.93 4.93a10 10 0 0 0 0 14.14"/>
+              </svg>
+              Conveyor Control
+            </div>
+            <span class="belt-status-badge" :class="beltRunning ? 'running' : 'stopped'">
+              <span class="belt-status-dot"></span>
+              {{ beltRunning ? 'Running' : 'Stopped' }}
+            </span>
           </div>
-          <div class="control-buttons">
-            <button class="btn btn-start" @click="toggleBelt('ON')">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-              Start Conveyor
-            </button>
-            <button class="btn btn-stop" @click="toggleBelt('OFF')">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-              Stop Conveyor
-            </button>
+
+          <div class="cs-body">
+            <!-- Controls column -->
+            <div class="cs-controls">
+              <div class="main-btns">
+                <button class="btn btn-start" :disabled="beltRunning || !mqttClient?.connected" @click="toggleBelt('ON')">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  Start
+                </button>
+                <button class="btn btn-stop" :disabled="!beltRunning || !mqttClient?.connected" @click="toggleBelt('OFF')">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                  Stop
+                </button>
+              </div>
+
+              <div class="speed-row">
+                <span class="speed-label">Speed</span>
+                <input
+                  type="range" min="20" max="100"
+                  v-model.number="beltSpeedPct"
+                  @change="onSpeedChange"
+                  class="speed-slider"
+                />
+                <span class="speed-val">{{ beltSpeedPct }}%</span>
+              </div>
+
+              <button class="btn btn-estop" @click="emergencyStop" :disabled="!mqttClient?.connected">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                  <circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/>
+                </svg>
+                Emergency Stop
+              </button>
+            </div>
+
+            <div class="cs-divider"></div>
+
+            <!-- Statistics column -->
+            <div class="cs-stats">
+              <div class="cs-stat-row">
+                <span class="cs-stat-label">Session Runtime</span>
+                <span class="cs-stat-val mono">{{ formatRuntime }}</span>
+              </div>
+              <div class="cs-stat-row">
+                <span class="cs-stat-label">Total Sorted</span>
+                <span class="cs-stat-val">{{ events.length }}</span>
+              </div>
+              <div class="cs-stat-row">
+                <span class="cs-stat-label">Last Detection</span>
+                <span class="cs-stat-val mono">{{ lastDetectionTime }}</span>
+              </div>
+              <div class="cs-inner-divider"></div>
+              <div class="cs-chem-row">
+                <span class="chem-chip li-ion">Li-ion <b>{{ chemistryCounts['Li-ion'] }}</b></span>
+                <span class="chem-chip alkaline">Alkaline <b>{{ chemistryCounts['Alkaline'] }}</b></span>
+                <span class="chem-chip nimh">NiMH <b>{{ chemistryCounts['NiMH'] }}</b></span>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -576,9 +720,15 @@ const setTab = (tab) => {
   border-radius: 14px;
   padding: 18px 20px;
   display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cs-header {
+  display: flex;
   align-items: center;
-  gap: 20px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .section-label {
@@ -593,36 +743,85 @@ const setTab = (tab) => {
   white-space: nowrap;
 }
 
-.control-buttons {
+.belt-status-badge {
   display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 99px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border: 1px solid;
+}
+
+.belt-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.belt-status-badge.running {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+.belt-status-badge.running .belt-status-dot {
+  background: #10b981;
+  animation: ping 2s ease-in-out infinite;
+}
+.belt-status-badge.stopped {
+  background: rgba(100, 116, 139, 0.1);
+  color: #64748b;
+  border-color: rgba(100, 116, 139, 0.2);
+}
+.belt-status-badge.stopped .belt-status-dot { background: #64748b; }
+
+.cs-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.cs-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 240px;
+  flex-shrink: 0;
+}
+
+.main-btns {
+  display: flex;
+  gap: 10px;
 }
 
 .btn {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 22px;
+  gap: 7px;
+  padding: 9px 18px;
   border: none;
   border-radius: 9px;
-  font-size: 0.9rem;
+  font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
   font-family: inherit;
+  white-space: nowrap;
 }
 
-.btn:active { transform: scale(0.97); }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+.btn:disabled { opacity: 0.38; cursor: not-allowed; }
 
 .btn-start {
   background: rgba(16, 185, 129, 0.15);
   color: #10b981;
   border: 1px solid rgba(16, 185, 129, 0.3);
 }
-.btn-start:hover {
+.btn-start:hover:not(:disabled) {
   background: rgba(16, 185, 129, 0.25);
-  box-shadow: 0 0 16px rgba(16, 185, 129, 0.2);
+  box-shadow: 0 0 14px rgba(16, 185, 129, 0.2);
 }
 
 .btn-stop {
@@ -630,9 +829,140 @@ const setTab = (tab) => {
   color: #ef4444;
   border: 1px solid rgba(239, 68, 68, 0.25);
 }
-.btn-stop:hover {
+.btn-stop:hover:not(:disabled) {
   background: rgba(239, 68, 68, 0.22);
-  box-shadow: 0 0 16px rgba(239, 68, 68, 0.2);
+  box-shadow: 0 0 14px rgba(239, 68, 68, 0.2);
+}
+
+.speed-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.speed-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  width: 42px;
+}
+
+.speed-slider {
+  flex: 1;
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
+.speed-val {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #38bdf8;
+  font-variant-numeric: tabular-nums;
+  width: 34px;
+  text-align: right;
+}
+
+.btn-estop {
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  justify-content: center;
+  letter-spacing: 0.02em;
+}
+.btn-estop:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #ef4444;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.25);
+}
+
+.cs-divider {
+  width: 1px;
+  background: #334155;
+  align-self: stretch;
+  margin: 0 22px;
+  flex-shrink: 0;
+}
+
+.cs-stats {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.cs-stat-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cs-stat-label {
+  font-size: 0.75rem;
+  color: #64748b;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.cs-stat-val {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.cs-stat-val.mono {
+  font-size: 0.875rem;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.cs-inner-divider {
+  height: 1px;
+  background: #334155;
+  margin: 3px 0;
+}
+
+.cs-chem-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chem-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  border: 1px solid;
+}
+
+.chem-chip b { font-weight: 800; }
+
+.chem-chip.li-ion {
+  background: rgba(248, 121, 121, 0.1);
+  color: #f87979;
+  border-color: rgba(248, 121, 121, 0.25);
+}
+
+.chem-chip.alkaline {
+  background: rgba(56, 189, 248, 0.1);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.25);
+}
+
+.chem-chip.nimh {
+  background: rgba(252, 211, 77, 0.1);
+  color: #fcd34d;
+  border-color: rgba(252, 211, 77, 0.25);
 }
 
 /* ── Viewer banner ── */
@@ -734,11 +1064,12 @@ const setTab = (tab) => {
     gap: 16px;
   }
 
-  .control-section { gap: 12px; }
-
-  .control-buttons { width: 100%; }
-
-  .btn { flex: 1; justify-content: center; }
+  .cs-body { flex-direction: column; }
+  .cs-divider { width: 100%; height: 1px; margin: 4px 0; }
+  .cs-controls { min-width: 0; width: 100%; }
+  .main-btns { width: 100%; }
+  .btn-start, .btn-stop { flex: 1; justify-content: center; }
+  .btn-estop { width: 100%; }
 
   .stats-row {
     grid-template-columns: repeat(2, 1fr);

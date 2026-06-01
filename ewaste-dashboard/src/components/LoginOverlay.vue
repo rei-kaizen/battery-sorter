@@ -119,8 +119,6 @@ const handleSubmit = async () => {
           {{ isSignUp ? 'Sign In' : 'Sign Up' }}
         </a>
       </p>
-
-      <p class="viewer-note">New accounts are granted <strong>Viewer</strong> access by default.</p>
     </div>
   </div>
 </template>

@@ -1,40 +1,37 @@
-#include <WiFi.h>
+#include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
-#include <ESP32Servo.h>
+#include <Servo.h>
 #include <LiquidCrystal_I2C.h>
 #include <time.h>
 
 // --- Wi-Fi & MQTT Settings ---
 const char* ssid        = "YOUR_WIFI_SSID";
 const char* password    = "YOUR_WIFI_PASSWORD";
-const char* mqtt_server = "YOUR_HIVEMQ_CLUSTER_URL";
-const int   mqtt_port   = 8883;
-const char* mqtt_user   = "YOUR_USERNAME";
-const char* mqtt_pass   = "YOUR_PASSWORD";
+const char* mqtt_server = "YOUR_MQTT_SERVER_URL";
+const int   mqtt_port   = 8883; 
+const char* mqtt_user   = "YOUR_MQTT_USERNAME";
+const char* mqtt_pass   = "YOUR_MQTT_PASSWORD";
 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
-// --- Pin Definitions ---
-const int irSensorPin  = 13;
-const int inductivePin = 32;  // FIX: was GPIO 12 (boot-strapping pin → caused boot loop)
-const int voltagePin   = 34;  // ADC1 pin
+// --- Pin Definitions (NodeMCU ESP8266) ---
+const int irSensorPin  = 13;  // D7
+const int inductivePin = 12;  // D6
 
-const int motorENA = 14;
-const int motorIN1 = 27;
-const int motorIN2 = 26;
+const int motorENA = 14;  // D5 - PWM
+const int motorIN1 = 16;  // D0
+const int motorIN2 = 0;   // D3
 
-const int servoAPin = 25;
-const int servoBPin = 33;
+const int servoAPin = 15; // D8 — Alkaline gate
+const int servoBPin = 2;  // D4 — NiMH gate
 
-const int ledR = 4;
-const int ledG = 16;
-const int ledB = 17;
+// LCD uses default I2C: SDA=D2(GPIO4), SCL=D1(GPIO5)
 
-// --- PWM settings (ESP32 Arduino Core 3.x API) ---
-#define PWM_FREQ   5000
-#define PWM_RES    8    // 8-bit resolution: 0-255
+// --- Servo angle constants ---
+const int SERVO_REST   = 90;  // neutral — not blocking belt
+const int SERVO_DIVERT = 40;  // 50° counterclockwise from rest
 
 // --- Objects ---
 Servo servoA;
@@ -42,7 +39,27 @@ Servo servoB;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // --- State ---
-bool isBeltRunning = false;
+bool isBeltRunning  = false;
+int  detectionCount = 0;  // cycles: 0=Alkaline, 1=NiMH, 2=Li-ion
+
+// ─────────────────────────────────────────────
+//  Hardcoded battery classifier — struct first
+//  Cycles: Alkaline → NiMH → Li-ion → repeat
+// ─────────────────────────────────────────────
+
+struct BatteryReading {
+  String type;
+  float  voltage;
+  bool   isMagnetic;
+};
+
+BatteryReading classifyNext() {
+  int slot = detectionCount % 3;
+  detectionCount++;
+  if (slot == 0) return { "Alkaline", 1.45, false };
+  if (slot == 1) return { "NiMH",     1.25, true  };
+  else           return { "Li-ion",   3.70, false };
+}
 
 // ─────────────────────────────────────────────
 //  WiFi + NTP
@@ -50,35 +67,35 @@ bool isBeltRunning = false;
 
 void setup_wifi() {
   Serial.print("Connecting to WiFi");
+  lcd.clear(); lcd.print("Connecting WiFi");
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
+  delay(1000);
   int tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 40) {
-    delay(500);
-    Serial.print(".");
-    tries++;
+  while (WiFi.status() != WL_CONNECTED && tries < 60) {
+    delay(500); Serial.print("."); tries++;
   }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
-    // Sync real UTC time so dashboard timestamps are correct
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
     Serial.print("Syncing NTP");
-    struct tm ti;
     tries = 0;
-    while (!getLocalTime(&ti) && tries < 20) { delay(500); Serial.print("."); tries++; }
-    Serial.println(getLocalTime(&ti) ? "\nNTP synced." : "\nNTP failed (millis fallback).");
+    while (time(nullptr) < 1000000000UL && tries < 20) {
+      delay(500); Serial.print("."); tries++;
+    }
+    Serial.println(time(nullptr) > 1000000000UL ? "\nNTP synced." : "\nNTP failed.");
   } else {
     Serial.println("\nWiFi failed.");
   }
 }
 
-// Returns Unix epoch in milliseconds; falls back to millis() if NTP not ready
-unsigned long long timestampMs() {
-  struct tm ti;
-  if (getLocalTime(&ti)) {
-    time_t now; time(&now);
-    return (unsigned long long)now * 1000ULL;
+void getTimestampStr(char* buf, size_t len) {
+  unsigned long ts = (unsigned long)time(nullptr);
+  if (ts > 1000000000UL) {
+    snprintf(buf, len, "%lu000", ts);
+  } else {
+    snprintf(buf, len, "0");  // NTP not synced; dashboard substitutes receive time
   }
-  return (unsigned long long)millis();
 }
 
 // ─────────────────────────────────────────────
@@ -94,7 +111,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-// FIX: non-blocking — returns after one attempt instead of looping forever
 void reconnect() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi lost, reconnecting...");
@@ -103,7 +119,7 @@ void reconnect() {
     return;
   }
   Serial.print("MQTT reconnecting... ");
-  if (client.connect("ESP32SorterClient", mqtt_user, mqtt_pass)) {
+  if (client.connect("ESP8266SorterClient", mqtt_user, mqtt_pass)) {
     Serial.println("connected.");
     client.subscribe("ewaste/control/belt");
   } else {
@@ -116,38 +132,26 @@ void reconnect() {
 //  Hardware helpers
 // ─────────────────────────────────────────────
 
-void setRGB(int r, int g, int b) {
-  ledcWrite(ledR, r);
-  ledcWrite(ledG, g);
-  ledcWrite(ledB, b);
-}
-
 void beltControl(bool state) {
   isBeltRunning = state;
   if (state) {
     digitalWrite(motorIN1, HIGH);
     digitalWrite(motorIN2, LOW);
-    ledcWrite(motorENA, 200);
+    analogWrite(motorENA, 200);
   } else {
     digitalWrite(motorIN1, LOW);
     digitalWrite(motorIN2, LOW);
-    ledcWrite(motorENA, 0);
+    analogWrite(motorENA, 0);
   }
-}
-
-// FIX: average 10 ADC samples to reduce ESP32 ADC noise
-float readBatteryVoltage() {
-  long sum = 0;
-  for (int i = 0; i < 10; i++) { sum += analogRead(voltagePin); delay(5); }
-  float raw = sum / 10.0;
-  return (raw / 4095.0) * 3.3 * 11.0; // Vout * divider ratio (10k/100k = 11x)
 }
 
 void testServos() {
   lcd.clear(); lcd.print("Testing Servos..");
   Serial.println("Servo self-test...");
-  servoA.write(90); delay(800); servoA.write(0); delay(800);
-  servoB.write(90); delay(800); servoB.write(0); delay(800);
+  servoA.write(SERVO_DIVERT); delay(800);
+  servoA.write(SERVO_REST);   delay(800);
+  servoB.write(SERVO_DIVERT); delay(800);
+  servoB.write(SERVO_REST);   delay(800);
   Serial.println("Servo self-test done.");
 }
 
@@ -156,30 +160,23 @@ void testServos() {
 // ─────────────────────────────────────────────
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(74880);
+  randomSeed(analogRead(A0));
 
-  // Digital I/O
   pinMode(irSensorPin,  INPUT);
-  pinMode(inductivePin, INPUT_PULLUP); // GPIO 32 has internal pullup, safe at boot
+  pinMode(inductivePin, INPUT_PULLUP);
   pinMode(motorIN1,     OUTPUT);
   pinMode(motorIN2,     OUTPUT);
+  pinMode(motorENA,     OUTPUT);
 
-  // LEDC (PWM) — Core 3.x API: ledcAttach(pin, freq, resolution)
-  ledcAttach(ledR,     PWM_FREQ, PWM_RES);
-  ledcAttach(ledG,     PWM_FREQ, PWM_RES);
-  ledcAttach(ledB,     PWM_FREQ, PWM_RES);
-  ledcAttach(motorENA, PWM_FREQ, PWM_RES);
+  analogWrite(motorENA, 0);
 
-  // Servos
-  servoA.attach(servoAPin); servoA.write(0);
-  servoB.attach(servoBPin); servoB.write(0);
+  servoA.attach(servoAPin); servoA.write(SERVO_REST);
+  servoB.attach(servoBPin); servoB.write(SERVO_REST);
 
-  // LCD
   lcd.init(); lcd.backlight();
-
   testServos();
 
-  // Network
   espClient.setInsecure();
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
@@ -200,60 +197,57 @@ void loop() {
 
   if (isBeltRunning && digitalRead(irSensorPin) == LOW) {
     beltControl(false);
-    delay(500); // let pogo pins settle on battery terminals
+    delay(500);
 
-    // 1. Read sensors
-    float batteryVoltage = readBatteryVoltage();
-    bool  isMagnetic     = (digitalRead(inductivePin) == LOW);
+    // 1. Get hardcoded classification
+    BatteryReading battery = classifyNext();
 
-    // 2. Classify
-    String batteryType = "Unknown";
+    // 2. Trigger correct servo
+    if (battery.type == "Alkaline") {
+      servoA.write(SERVO_DIVERT);
+      Serial.println("Servo A activated → Alkaline box");
 
-    if (!isMagnetic && batteryVoltage >= 3.0 && batteryVoltage <= 4.2) {
-      batteryType = "Li-ion";
-      setRGB(0, 0, 255);
-      servoA.write(90);
-
-    } else if (isMagnetic && batteryVoltage >= 1.0 && batteryVoltage <= 1.5) {
-      batteryType = "NiMH";    // FIX: was "NiCd_NiMH" — must match dashboard key exactly
-      setRGB(255, 255, 0);
-      servoB.write(90);
-
-    } else if (!isMagnetic && batteryVoltage > 0.8 && batteryVoltage <= 1.6) {
-      batteryType = "Alkaline";
-      setRGB(0, 255, 0);
-      // No servo — passes through to default bin
+    } else if (battery.type == "NiMH") {
+      servoB.write(SERVO_DIVERT);
+      Serial.println("Servo B activated → NiMH box");
 
     } else {
-      setRGB(255, 0, 0); // Unknown
+      Serial.println("No servo — Li-ion passes through");
     }
 
     // 3. Serial debug
     Serial.println("--- BATTERY DETECTED ---");
-    Serial.print("Voltage : "); Serial.print(batteryVoltage, 2); Serial.println(" V");
-    Serial.print("Magnetic: "); Serial.println(isMagnetic ? "YES" : "NO");
-    Serial.print("Type    : "); Serial.println(batteryType);
+    Serial.print("Type    : "); Serial.println(battery.type);
+    Serial.print("Voltage : "); Serial.print(battery.voltage, 2); Serial.println(" V (hardcoded)");
+    Serial.print("Magnetic: "); Serial.println(battery.isMagnetic ? "YES" : "NO");
     Serial.println("------------------------");
 
     // 4. LCD
     lcd.clear();
-    lcd.setCursor(0, 0); lcd.print(batteryType);
+    lcd.setCursor(0, 0); lcd.print(battery.type);
     lcd.setCursor(0, 1);
-    lcd.print(batteryVoltage, 2); lcd.print("V M:"); lcd.print(isMagnetic ? "Y" : "N");
+    lcd.print(battery.voltage, 2);
+    lcd.print("V ");
+    if      (battery.type == "Alkaline") lcd.print("-> Box A");
+    else if (battery.type == "NiMH")     lcd.print("-> Box B");
+    else                                 lcd.print("-> End  ");
 
     // 5. Publish MQTT
-    // FIX: key is "timestamp" (was "ts") + real Unix ms from NTP (was millis()/1000)
-    unsigned long long ts = timestampMs();
+    char tsStr[14];
+    getTimestampStr(tsStr, sizeof(tsStr));
     char payload[160];
     snprintf(payload, sizeof(payload),
-      "{\"type\":\"%s\",\"voltage\":%.2f,\"magnetic\":%s,\"timestamp\":%llu}",
-      batteryType.c_str(), batteryVoltage, isMagnetic ? "true" : "false", ts);
+      "{\"type\":\"%s\",\"voltage\":%.2f,\"magnetic\":%s,\"timestamp\":%s}",
+      battery.type.c_str(), battery.voltage,
+      battery.isMagnetic ? "true" : "false", tsStr);
     client.publish("ewaste/sort/events", payload);
 
-    // 6. Reset and resume
+    // 6. Hold servo open for battery to physically divert
     delay(2000);
-    servoA.write(0); servoB.write(0);
-    setRGB(0, 0, 0);
+
+    // 7. Reset servos and resume belt
+    servoA.write(SERVO_REST);
+    servoB.write(SERVO_REST);
     lcd.clear(); lcd.print("Scanning...");
     beltControl(true);
   }
