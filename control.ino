@@ -17,26 +17,27 @@ WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
 // --- Pin Definitions (NodeMCU ESP8266) ---
-const int irSensorPin  = 13;  // D7
-const int inductivePin = 12;  // D6
+const int irSensorPin  = 13;  // D7 — IR obstacle sensor
+const int inductivePin = 12;  // D6 — inductive proximity sensor (NPN)
+const int voltagePin   = A0;  // A0 — battery OCV via voltage divider
 
-const int motorENA = 14;  // D5 - PWM
-const int motorIN1 = 16;  // D0
-const int motorIN2 = 0;   // D3
+const int motorENA = 14;  // D5 — PWM speed control
+const int motorIN1 = 16;  // D0 — motor direction
+const int motorIN2 = 0;   // D3 — motor direction
 
-const int servoAPin = 15; // D8 — Alkaline gate
-const int servoBPin = 2;  // D4 — NiMH gate
+const int servoAPin = 15; // D8 — Alkaline divert gate
+const int servoBPin = 2;  // D4 — NiMH divert gate
 
 // LCD uses default I2C: SDA=D2(GPIO4), SCL=D1(GPIO5)
 
 // --- Servo angle constants ---
-const int SERVO_REST   = 0;   // start position — gate fully open/neutral
-const int SERVO_DIVERT = 80;  // divert position — gate redirects battery
+const int SERVO_REST   = 0;   // neutral — gate not blocking belt
+const int SERVO_DIVERT = 80;  // divert — gate redirects battery into bin
 
 // --- Servo timing (milliseconds) ---
-const int SERVO_A_DELAY = 5000;   // wait 5s after IR trigger before Servo A moves
-const int SERVO_B_DELAY = 10000;  // wait 10s after IR trigger before Servo B moves
-const int SERVO_HOLD    = 3000;   // hold at divert position for 3s to capture battery
+const int SERVO_A_DELAY = 5000;   // travel time from IR sensor to Alkaline gate
+const int SERVO_B_DELAY = 10000;  // travel time from IR sensor to NiMH gate
+const int SERVO_HOLD    = 3000;   // hold gate open to ensure battery falls into bin
 
 // --- Objects ---
 Servo servoA;
@@ -44,32 +45,43 @@ Servo servoB;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // --- State ---
-bool isBeltRunning  = false;
-int  detectionCount = 0;  // cycles: 0=Alkaline, 1=NiMH, 2=Li-ion
+bool isBeltRunning = false;
 
 // ─────────────────────────────────────────────
-//  Battery classifier
-//  Cycles: Alkaline → NiMH → Li-ion → repeat
+//  Sensor reading
 // ─────────────────────────────────────────────
 
-struct BatteryReading {
-  String type;
-  float  voltage;
-  bool   isMagnetic;
-};
-
-// Simulated voltage for demo/testing: random 0.00V–1.50V
-// To enable real sensing: replace with (analogRead(A0) / 1023.0) * 3.3 * 11.0
-float simulatedVoltage() {
-  return random(0, 1501) / 1000.0;
+// Averages 10 ADC samples to reduce noise
+// Voltage divider: R1=100kΩ, R2=10kΩ → 11x multiplier
+// ESP8266 ADC: 10-bit (0–1023), 3.3V reference
+float readBatteryVoltage() {
+  long sum = 0;
+  for (int i = 0; i < 10; i++) {
+    sum += analogRead(voltagePin);
+    delay(5);
+  }
+  float raw = sum / 10.0;
+  return (raw / 1023.0) * 3.3 * 11.0;
 }
 
-BatteryReading classifyNext() {
-  int slot = detectionCount % 3;
-  detectionCount++;
-  if (slot == 0) return { "Alkaline", simulatedVoltage(), false };
-  if (slot == 1) return { "NiMH",     simulatedVoltage(), true  };
-  else           return { "Li-ion",   simulatedVoltage(), false };
+// ─────────────────────────────────────────────
+//  Battery classification
+//  Based on open-circuit voltage and metal casing detection
+//
+//  NiMH     → metal casing (magnetic=true)  + 1.0–1.3V
+//  Alkaline → plastic casing (magnetic=false) + 1.2–1.6V
+//  Li-ion   → plastic casing (magnetic=false) + 3.0–4.2V
+// ─────────────────────────────────────────────
+
+String classifyBattery(float voltage, bool isMagnetic) {
+  if (isMagnetic && voltage >= 1.0 && voltage <= 1.3) {
+    return "NiMH";
+  } else if (!isMagnetic && voltage >= 1.2 && voltage <= 1.6) {
+    return "Alkaline";
+  } else if (!isMagnetic && voltage >= 3.0 && voltage <= 4.2) {
+    return "Li-ion";
+  }
+  return "Unknown";
 }
 
 // ─────────────────────────────────────────────
@@ -105,7 +117,7 @@ void getTimestampStr(char* buf, size_t len) {
   if (ts > 1000000000UL) {
     snprintf(buf, len, "%lu000", ts);
   } else {
-    snprintf(buf, len, "0");  // NTP not synced; dashboard substitutes receive time
+    snprintf(buf, len, "0");
   }
 }
 
@@ -172,7 +184,6 @@ void testServos() {
 
 void setup() {
   Serial.begin(74880);
-  randomSeed(analogRead(A0));
 
   pinMode(irSensorPin,  INPUT);
   pinMode(inductivePin, INPUT_PULLUP);
@@ -208,57 +219,58 @@ void loop() {
 
   if (isBeltRunning && digitalRead(irSensorPin) == LOW) {
     beltControl(false);
+    delay(300); // brief settle before sensor reads
 
-    // 1. Classify battery
-    BatteryReading battery = classifyNext();
+    // 1. Read both sensors
+    float  batteryVoltage = readBatteryVoltage();
+    bool   isMagnetic     = (digitalRead(inductivePin) == LOW);
+    String batteryType    = classifyBattery(batteryVoltage, isMagnetic);
 
     // 2. Serial debug
     Serial.println("--- BATTERY DETECTED ---");
-    Serial.print("Type    : "); Serial.println(battery.type);
-    Serial.print("Voltage : "); Serial.print(battery.voltage, 2); Serial.println(" V (simulated)");
-    Serial.print("Magnetic: "); Serial.println(battery.isMagnetic ? "YES" : "NO");
+    Serial.print("Voltage : "); Serial.print(batteryVoltage, 2); Serial.println(" V");
+    Serial.print("Magnetic: "); Serial.println(isMagnetic ? "YES" : "NO");
+    Serial.print("Type    : "); Serial.println(batteryType);
     Serial.println("------------------------");
 
-    // 3. LCD — show type immediately on detection
+    // 3. LCD — show classification immediately
     lcd.clear();
-    lcd.setCursor(0, 0); lcd.print(battery.type);
+    lcd.setCursor(0, 0); lcd.print(batteryType);
     lcd.setCursor(0, 1);
-    lcd.print(battery.voltage, 2);
-    lcd.print("V ");
-    if      (battery.type == "Alkaline") lcd.print("-> Box A");
-    else if (battery.type == "NiMH")     lcd.print("-> Box B");
-    else                                 lcd.print("-> End  ");
+    lcd.print(batteryVoltage, 2);
+    lcd.print("V M:");
+    lcd.print(isMagnetic ? "Y" : "N");
 
-    // 4. Publish MQTT immediately on detection
+    // 4. Publish MQTT
     char tsStr[14];
     getTimestampStr(tsStr, sizeof(tsStr));
     char payload[160];
     snprintf(payload, sizeof(payload),
       "{\"type\":\"%s\",\"voltage\":%.2f,\"magnetic\":%s,\"timestamp\":%s}",
-      battery.type.c_str(), battery.voltage,
-      battery.isMagnetic ? "true" : "false", tsStr);
+      batteryType.c_str(), batteryVoltage,
+      isMagnetic ? "true" : "false", tsStr);
     client.publish("ewaste/sort/events", payload);
 
-    // 5. Servo timing — wait for battery to travel to gate position, then divert
-    if (battery.type == "Alkaline") {
-      delay(SERVO_A_DELAY);                 // wait 5s for battery to reach Servo A gate
-      servoA.write(SERVO_DIVERT);           // rotate to 80°
-      Serial.println("Servo A → 80° (Alkaline box)");
-      delay(SERVO_HOLD);                    // hold 3s to let battery fall into bin
-      servoA.write(SERVO_REST);             // return to 0°
+    // 5. Servo timing — gate fires after belt travel delay
+    if (batteryType == "Alkaline") {
+      delay(SERVO_A_DELAY);
+      servoA.write(SERVO_DIVERT);
+      Serial.println("Servo A → 80° (Alkaline bin)");
+      delay(SERVO_HOLD);
+      servoA.write(SERVO_REST);
       Serial.println("Servo A → 0° (reset)");
 
-    } else if (battery.type == "NiMH") {
-      delay(SERVO_B_DELAY);                 // wait 10s for battery to reach Servo B gate
-      servoB.write(SERVO_DIVERT);           // rotate to 80°
-      Serial.println("Servo B → 80° (NiMH box)");
-      delay(SERVO_HOLD);                    // hold 3s to let battery fall into bin
-      servoB.write(SERVO_REST);             // return to 0°
+    } else if (batteryType == "NiMH") {
+      delay(SERVO_B_DELAY);
+      servoB.write(SERVO_DIVERT);
+      Serial.println("Servo B → 80° (NiMH bin)");
+      delay(SERVO_HOLD);
+      servoB.write(SERVO_REST);
       Serial.println("Servo B → 0° (reset)");
 
     } else {
-      // Li-ion — no servo needed, battery rides belt to end bin
-      Serial.println("No servo — Li-ion passes through to end");
+      // Li-ion and Unknown pass through to end bin
+      Serial.println("No servo — battery passes through to end bin");
       delay(500);
     }
 
