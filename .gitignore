@@ -1,30 +1,52 @@
-# Dependency directories
+# ─── Node / Dashboard ───────────────────────────────────
 ewaste-dashboard/node_modules/
 ewaste-dashboard/dist/
 ewaste-dashboard/dist-ssr/
-
-# Local env files
 ewaste-dashboard/*.local
+
+# ─── Environment / Secrets ──────────────────────────────
 ewaste-dashboard/.env
 ewaste-dashboard/.env.*
+.env
+.env.*
 
-# Logs
-logs
+# ─── Arduino / Firmware secrets ─────────────────────────
+# If you ever move credentials to a separate header, ignore it:
+secrets.h
+credentials.h
+
+# ─── Firebase local cache ────────────────────────────────
+.firebase/
+ewaste-dashboard/.firebase/
+
+# ─── Logs ───────────────────────────────────────────────
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
+yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 
-# System Files
+# ─── OS files ───────────────────────────────────────────
 .DS_Store
 Thumbs.db
+Desktop.ini
 
-# Firebase local cache
-.firebase/
+# ─── Editor / IDE ───────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# AI Agent folders
+# ─── AI Agent (Claude Code internal) ────────────────────
 .agents/
 skills-lock.json
 
-# Root dist if accidentally created
+# ─── Misc build artifacts ───────────────────────────────
 /dist/
+*.cache
