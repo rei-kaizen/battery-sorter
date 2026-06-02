@@ -156,6 +156,8 @@ const handleIncomingData = (data) => {
     voltageData.value.shift()
   }
   push(dbRef(db, 'battery_events'), normalized)
+    .then(() => console.log('[Firebase] event saved:', normalized.type))
+    .catch(e => console.error('[Firebase] write failed:', e.code, e.message))
 }
 
 const toggleBelt = (state) => {

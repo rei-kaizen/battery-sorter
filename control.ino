@@ -9,7 +9,7 @@
 const char* ssid        = "YOUR_WIFI_SSID";
 const char* password    = "YOUR_WIFI_PASSWORD";
 const char* mqtt_server = "YOUR_MQTT_SERVER_URL";
-const int   mqtt_port   = 8883; 
+const int   mqtt_port   = 8883;
 const char* mqtt_user   = "YOUR_MQTT_USERNAME";
 const char* mqtt_pass   = "YOUR_MQTT_PASSWORD";
 
@@ -30,8 +30,13 @@ const int servoBPin = 2;  // D4 — NiMH gate
 // LCD uses default I2C: SDA=D2(GPIO4), SCL=D1(GPIO5)
 
 // --- Servo angle constants ---
-const int SERVO_REST   = 90;  // neutral — not blocking belt
-const int SERVO_DIVERT = 40;  // 50° counterclockwise from rest
+const int SERVO_REST   = 0;   // start position — gate fully open/neutral
+const int SERVO_DIVERT = 80;  // divert position — gate redirects battery
+
+// --- Servo timing (milliseconds) ---
+const int SERVO_A_DELAY = 5000;   // wait 5s after IR trigger before Servo A moves
+const int SERVO_B_DELAY = 10000;  // wait 10s after IR trigger before Servo B moves
+const int SERVO_HOLD    = 3000;   // hold at divert position for 3s to capture battery
 
 // --- Objects ---
 Servo servoA;
@@ -43,7 +48,7 @@ bool isBeltRunning  = false;
 int  detectionCount = 0;  // cycles: 0=Alkaline, 1=NiMH, 2=Li-ion
 
 // ─────────────────────────────────────────────
-//  Hardcoded battery classifier — struct first
+//  Battery classifier
 //  Cycles: Alkaline → NiMH → Li-ion → repeat
 // ─────────────────────────────────────────────
 
@@ -53,12 +58,18 @@ struct BatteryReading {
   bool   isMagnetic;
 };
 
+// Simulated voltage for demo/testing: random 0.00V–1.50V
+// To enable real sensing: replace with (analogRead(A0) / 1023.0) * 3.3 * 11.0
+float simulatedVoltage() {
+  return random(0, 1501) / 1000.0;
+}
+
 BatteryReading classifyNext() {
   int slot = detectionCount % 3;
   detectionCount++;
-  if (slot == 0) return { "Alkaline", 1.45, false };
-  if (slot == 1) return { "NiMH",     1.25, true  };
-  else           return { "Li-ion",   3.70, false };
+  if (slot == 0) return { "Alkaline", simulatedVoltage(), false };
+  if (slot == 1) return { "NiMH",     simulatedVoltage(), true  };
+  else           return { "Li-ion",   simulatedVoltage(), false };
 }
 
 // ─────────────────────────────────────────────
@@ -197,32 +208,18 @@ void loop() {
 
   if (isBeltRunning && digitalRead(irSensorPin) == LOW) {
     beltControl(false);
-    delay(500);
 
-    // 1. Get hardcoded classification
+    // 1. Classify battery
     BatteryReading battery = classifyNext();
 
-    // 2. Trigger correct servo
-    if (battery.type == "Alkaline") {
-      servoA.write(SERVO_DIVERT);
-      Serial.println("Servo A activated → Alkaline box");
-
-    } else if (battery.type == "NiMH") {
-      servoB.write(SERVO_DIVERT);
-      Serial.println("Servo B activated → NiMH box");
-
-    } else {
-      Serial.println("No servo — Li-ion passes through");
-    }
-
-    // 3. Serial debug
+    // 2. Serial debug
     Serial.println("--- BATTERY DETECTED ---");
     Serial.print("Type    : "); Serial.println(battery.type);
-    Serial.print("Voltage : "); Serial.print(battery.voltage, 2); Serial.println(" V (hardcoded)");
+    Serial.print("Voltage : "); Serial.print(battery.voltage, 2); Serial.println(" V (simulated)");
     Serial.print("Magnetic: "); Serial.println(battery.isMagnetic ? "YES" : "NO");
     Serial.println("------------------------");
 
-    // 4. LCD
+    // 3. LCD — show type immediately on detection
     lcd.clear();
     lcd.setCursor(0, 0); lcd.print(battery.type);
     lcd.setCursor(0, 1);
@@ -232,7 +229,7 @@ void loop() {
     else if (battery.type == "NiMH")     lcd.print("-> Box B");
     else                                 lcd.print("-> End  ");
 
-    // 5. Publish MQTT
+    // 4. Publish MQTT immediately on detection
     char tsStr[14];
     getTimestampStr(tsStr, sizeof(tsStr));
     char payload[160];
@@ -242,12 +239,30 @@ void loop() {
       battery.isMagnetic ? "true" : "false", tsStr);
     client.publish("ewaste/sort/events", payload);
 
-    // 6. Hold servo open for battery to physically divert
-    delay(2000);
+    // 5. Servo timing — wait for battery to travel to gate position, then divert
+    if (battery.type == "Alkaline") {
+      delay(SERVO_A_DELAY);                 // wait 5s for battery to reach Servo A gate
+      servoA.write(SERVO_DIVERT);           // rotate to 80°
+      Serial.println("Servo A → 80° (Alkaline box)");
+      delay(SERVO_HOLD);                    // hold 3s to let battery fall into bin
+      servoA.write(SERVO_REST);             // return to 0°
+      Serial.println("Servo A → 0° (reset)");
 
-    // 7. Reset servos and resume belt
-    servoA.write(SERVO_REST);
-    servoB.write(SERVO_REST);
+    } else if (battery.type == "NiMH") {
+      delay(SERVO_B_DELAY);                 // wait 10s for battery to reach Servo B gate
+      servoB.write(SERVO_DIVERT);           // rotate to 80°
+      Serial.println("Servo B → 80° (NiMH box)");
+      delay(SERVO_HOLD);                    // hold 3s to let battery fall into bin
+      servoB.write(SERVO_REST);             // return to 0°
+      Serial.println("Servo B → 0° (reset)");
+
+    } else {
+      // Li-ion — no servo needed, battery rides belt to end bin
+      Serial.println("No servo — Li-ion passes through to end");
+      delay(500);
+    }
+
+    // 6. Resume belt
     lcd.clear(); lcd.print("Scanning...");
     beltControl(true);
   }

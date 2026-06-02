@@ -1,0 +1,153 @@
+# ============================================================
+#  E-Waste Battery Sorter — Full Requirements Manifest
+#  Last updated: 2026-06-02
+# ============================================================
+
+
+# ─────────────────────────────────────────────
+#  HARDWARE REQUIREMENTS
+# ─────────────────────────────────────────────
+
+[microcontroller]
+board               = NodeMCU ESP8266 (ESP-12E Module)
+chip                = ESP8266
+flash               = 4MB
+usb_serial_chip     = CH340G
+driver              = CH340 Windows Driver (wch-ic.com)
+upload_mode         = auto-reset (no BOOT button needed)
+
+[sensors]
+ir_sensor           = FC-51 obstacle sensor, NPN output, active LOW, 5V
+inductive_sensor    = NPN proximity sensor, 5–12V, active LOW on metal detect
+
+[voltage_measurement]
+method              = resistive voltage divider (production)
+r1                  = 100kΩ (between battery+ and A0)
+r2                  = 10kΩ  (between A0 and GND)
+adc_pin             = A0 (NodeMCU)
+adc_resolution      = 10-bit (0–1023)
+input_range         = 0–3.3V (maps to 0–36.3V battery after 11x ratio)
+formula             = V_battery = (raw / 1023.0) * 3.3 * 11.0
+demo_mode           = simulatedVoltage() — random float 0.00–1.50V
+
+[actuators]
+servo_a             = SG90 or MG90S, 5V, signal GPIO 15 (D8) — Alkaline gate
+servo_b             = SG90 or MG90S, 5V, signal GPIO  2 (D4) — NiMH gate
+motor_driver        = L298N H-bridge module
+conveyor_motor      = 12V DC motor
+
+[display]
+lcd                 = 16x2 LCD with PCF8574 I2C backpack
+i2c_address         = 0x27 (try 0x3F if unresponsive)
+sda_pin             = GPIO 4 (D2)
+scl_pin             = GPIO 5 (D1)
+
+[power]
+motor_supply        = 12V DC adapter, min 2A (barrel jack)
+logic_supply        = 5V USB power bank, min 1A
+motor_wire_gauge    = 18 AWG (barrel jack → L298N VSS, L298N → motor)
+signal_wire_gauge   = 22 AWG (all other connections)
+wire_jacket         = silicone recommended for motor runs
+
+
+# ─────────────────────────────────────────────
+#  FIRMWARE (ARDUINO / ESP8266)
+# ─────────────────────────────────────────────
+
+[arduino_ide]
+version             = 2.x (latest)
+board_package       = esp8266 by ESP8266 Community >= 3.1.2
+board_manager_url   = http://arduino.esp8266.com/stable/package_esp8266com_index.json
+board_setting       = NodeMCU 1.0 (ESP-12E Module)
+upload_speed        = 115200
+flash_size          = 4MB (FS:2MB OTA:~1019KB)
+
+[arduino_libraries]
+PubSubClient        = >= 2.8.0   (Nick O'Leary) — MQTT client
+LiquidCrystal_I2C   = >= 1.1.2   (Frank de Brabander) — LCD I2C
+Servo               = built-in   (Arduino standard library)
+ESP8266WiFi         = built-in   (ESP8266 board package)
+WiFiClientSecure    = built-in   (ESP8266 board package)
+time.h              = built-in   (C standard library)
+
+[mqtt_broker]
+provider            = HiveMQ Cloud
+protocol            = MQTT over TLS (wss://)
+port                = 8883 (MQTT TLS) / 8884 (WebSocket TLS)
+tls_validation      = setInsecure() — skips cert check (acceptable for academic)
+
+
+# ─────────────────────────────────────────────
+#  DASHBOARD (NODE.JS / VUE)
+# ─────────────────────────────────────────────
+
+[runtime]
+node                = >= 20.x LTS
+npm                 = >= 10.x
+
+[npm_dependencies]
+vue                 = ^3.5.12
+vite                = ^6.0.0
+@vitejs/plugin-vue  = ^5.2.0
+mqtt                = ^5.15.1
+firebase            = ^12.13.0
+chart.js            = ^4.5.1
+vue-chartjs         = ^5.3.3
+
+[firebase_services]
+authentication      = email/password sign-in
+realtime_database   = asia-southeast1 region
+hosting             = Firebase Hosting (SPA with rewrite rule)
+project_id          = embedded-final-project-29234
+
+[firebase_cli]
+version             = latest
+install             = npm install -g firebase-tools
+login               = npx firebase login
+ci_token            = npx firebase login:ci  (for GitHub Actions)
+
+
+# ─────────────────────────────────────────────
+#  CI/CD
+# ─────────────────────────────────────────────
+
+[github_actions]
+workflow            = .github/workflows/firebase-deploy.yml
+trigger             = push to main branch
+steps               = npm ci → npm run build → firebase deploy --only hosting
+required_secret     = FIREBASE_TOKEN (from npx firebase login:ci)
+
+[live_url]
+production          = https://embedded-final-project-29234.web.app
+
+
+# ─────────────────────────────────────────────
+#  DEVELOPMENT ENVIRONMENT
+# ─────────────────────────────────────────────
+
+[recommended_os]
+primary             = Windows 10 / 11
+tested_on           = Windows 11 Home 10.0.26200
+
+[recommended_tools]
+ide_firmware        = Arduino IDE 2.x
+ide_dashboard       = VS Code with Volar extension (Vue Language Features)
+serial_monitor      = Arduino IDE Serial Monitor (baud: 74880)
+mqtt_debugger       = MQTT Explorer or HiveMQ Web Client
+firebase_console    = console.firebase.google.com
+
+
+# ─────────────────────────────────────────────
+#  CLASSIFICATION LOGIC
+# ─────────────────────────────────────────────
+
+[battery_types]
+#  Type      Magnetic   Voltage Range   Servo Action
+#  Li-ion    No         3.0 – 4.2V      Pass through (end of belt)
+#  Alkaline  No         0.8 – 1.6V      Servo A → Bin A
+#  NiMH      Yes        1.0 – 1.5V      Servo B → Bin B
+
+[demo_mode]
+voltage_source      = simulatedVoltage() random 0.00–1.50V
+classification      = cyclic (Alkaline → NiMH → Li-ion → repeat)
+toggle_to_prod      = replace simulatedVoltage() with ADC read in control.ino
