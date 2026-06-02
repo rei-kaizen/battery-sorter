@@ -72,7 +72,7 @@ Formula: V_battery = (ADC_raw / 1023.0) × 3.3 × 11.0
 Max safe input: 3.3 × 11 = 36.3V
 ```
 
-> **Demo mode:** The current firmware uses a simulated random voltage (0.00–1.50V) in place of the ADC reading for rapid testing. To enable real voltage sensing, replace `simulatedVoltage()` in `control.ino` with the ADC formula above and wire A0 to the voltage divider output.
+The firmware averages 10 ADC samples to reduce noise before applying the formula.
 
 ---
 
@@ -110,7 +110,6 @@ Max safe input: 3.3 × 11 = 36.3V
 | Alkaline | No metal (LOW) | 0.8–1.6V | Servo A diverts to Bin A |
 | NiMH | Metal (HIGH) | 1.0–1.5V | Servo B diverts to Bin B |
 
-> In demo mode the firmware cycles Alkaline → NiMH → Li-ion with simulated voltages instead of reading live sensor data.
 
 ---
 

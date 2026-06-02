@@ -113,7 +113,7 @@ mqtt.connect('wss://YOUR_HIVEMQ_CLUSTER_URL:8884/mqtt', {
 ├── battery_events/
 │   └── {auto-push-id}/
 │       ├── type:      "Li-ion" | "Alkaline" | "NiMH" | "Unknown"
-│       ├── voltage:   float (V) — simulated 0.00–1.50 in demo mode
+│       ├── voltage:   float (V) — battery terminal voltage in volts
 │       ├── magnetic:  boolean
 │       └── timestamp: number (Unix ms)
 │
@@ -157,16 +157,9 @@ App mounts
 
 ---
 
-## Voltage Data — Demo vs Production
+## Voltage Data
 
-| Mode | Source | Value |
-|------|--------|-------|
-| **Demo (current)** | ESP8266 firmware `simulatedVoltage()` | Random 0.00–1.50V |
-| **Production** | Voltage divider on A0 | Real battery terminal voltage |
-
-The dashboard receives and displays whatever voltage value arrives in the MQTT payload — no dashboard changes needed when switching between demo and production firmware.
-
-### Production Voltage Divider Circuit
+Battery terminal voltage is measured by the ESP8266 firmware via a resistive voltage divider on pin A0 and published in each MQTT sort event. The dashboard displays whatever value arrives in the payload — no dashboard changes are needed if firmware parameters change.
 
 ```
 Battery (+) ─── 100kΩ ─── A0 (NodeMCU) ─── 10kΩ ─── GND
