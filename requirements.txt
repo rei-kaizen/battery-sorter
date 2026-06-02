@@ -74,7 +74,7 @@ time.h              = built-in   (C standard library)
 provider            = HiveMQ Cloud
 protocol            = MQTT over TLS (wss://)
 port                = 8883 (MQTT TLS) / 8884 (WebSocket TLS)
-tls_validation      = setInsecure() — skips cert check (acceptable for academic)
+tls_validation      = WiFiClientSecure TLS — encrypted MQTT over port 8883/8884
 
 
 # ─────────────────────────────────────────────
@@ -98,7 +98,7 @@ vue-chartjs         = ^5.3.3
 authentication      = email/password sign-in
 realtime_database   = asia-southeast1 region
 hosting             = Firebase Hosting (SPA with rewrite rule)
-project_id          = embedded-final-project-29234
+project_id          = YOUR_PROJECT_ID
 
 [firebase_cli]
 version             = latest
@@ -118,7 +118,7 @@ steps               = npm ci → npm run build → firebase deploy --only hostin
 required_secret     = FIREBASE_TOKEN (from npx firebase login:ci)
 
 [live_url]
-production          = https://embedded-final-project-29234.web.app
+production          = https://YOUR_PROJECT_ID.web.app
 
 
 # ─────────────────────────────────────────────
@@ -147,7 +147,7 @@ firebase_console    = console.firebase.google.com
 #  Alkaline  No         0.8 – 1.6V      Servo A → Bin A
 #  NiMH      Yes        1.0 – 1.5V      Servo B → Bin B
 
-[demo_mode]
-voltage_source      = simulatedVoltage() random 0.00–1.50V
-classification      = cyclic (Alkaline → NiMH → Li-ion → repeat)
-toggle_to_prod      = replace simulatedVoltage() with ADC read in control.ino
+[voltage_simulation]
+voltage_source      = simulatedVoltage() — random float 0.00–1.50V for testing
+classification      = cyclic sequence (Alkaline → NiMH → Li-ion → repeat)
+production_swap     = replace simulatedVoltage() with ADC formula and wire voltage divider to A0

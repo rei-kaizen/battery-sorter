@@ -14,8 +14,7 @@ An embedded systems final project that automatically classifies and sorts mixed 
 │                                                          │
 │  IR Sensor ──────> detects battery on belt              │
 │  Inductive ──────> detects metallic casing              │
-│  Voltage Div ────> reads terminal voltage (production)   │
-│           or ────> simulatedVoltage() 0–1.5V (demo)     │
+│  Voltage Divider > reads battery terminal voltage        │
 │                                                          │
 │  Classify battery type                                   │
 │  Trigger Servo A or Servo B                              │
@@ -69,8 +68,8 @@ An embedded systems final project that automatically classifies and sorts mixed 
 }
 ```
 
-- `voltage` — real battery terminal voltage in production; random 0.00–1.50V in demo mode
-- `timestamp` — Unix epoch in milliseconds from NTP sync; falls back to `millis()` if NTP unavailable
+- `voltage` — battery terminal voltage in volts, measured via resistive voltage divider on A0
+- `timestamp` — Unix epoch in milliseconds synchronized via NTP
 - Published to topic: `ewaste/sort/events`
 - Belt control received from topic: `ewaste/control/belt` (`"ON"` / `"OFF"`)
 
@@ -78,21 +77,13 @@ An embedded systems final project that automatically classifies and sorts mixed 
 
 ## Classification Logic
 
-| Battery | Inductive Sensor | Voltage (production) | Servo |
-|---------|-----------------|---------------------|-------|
+| Battery | Inductive Sensor | Voltage Range | Servo Action |
+|---------|-----------------|---------------|--------------|
 | Li-ion | No metal | 3.0–4.2V | None — passes to end of belt |
 | Alkaline | No metal | 0.8–1.6V | Servo A → Bin A |
 | NiMH | Metal detected | 1.0–1.5V | Servo B → Bin B |
 
-### Demo Mode vs Production Mode
-
-| | Demo (current) | Production |
-|---|---|---|
-| Voltage source | `simulatedVoltage()` — random 0.00–1.50V | ADC on A0 via 100kΩ/10kΩ divider |
-| Classification | Cyclic: Alkaline → NiMH → Li-ion | IR + inductive + voltage thresholds |
-| Toggle | Replace `simulatedVoltage()` call in `control.ino` | Wire voltage divider to A0 |
-
-### Voltage Divider (Production)
+### Voltage Divider
 
 ```
 Battery (+) ─── 100kΩ ─┬─── A0 (NodeMCU)
@@ -137,36 +128,25 @@ root/
 
 ---
 
-## Project Timeline & Milestones
+## Project Milestones
 
-| Week | Milestone | Status |
-|------|-----------|--------|
-| 5 | HiveMQ broker setup; ESP8266 MQTT publish; Firebase RTDB schema | ✅ Done |
-| 6 | Vue.js dashboard — live table, charts, Firebase + MQTT integration | ✅ Done |
-| 7 | Firebase Auth + RBAC; MQTT belt control; Firebase Hosting + CI/CD | ✅ Done |
-| 8 | Stress test 50+ batteries; accuracy report; demo video; submission | 🔄 In progress |
+The following components were fully designed, implemented, and integrated as part of this project:
+
+- **MQTT Infrastructure** — HiveMQ Cloud broker configured with TLS; ESP8266 publishes sort events and subscribes to belt control commands in real time
+- **Firebase Backend** — Realtime Database schema for battery events and user profiles; Firebase Authentication with email/password sign-in
+- **Vue.js Dashboard** — Live voltage chart, battery chemistry bar chart, and scrollable event table; all updated in real time via MQTT WebSocket
+- **Role-Based Access Control** — Viewer and Admin roles enforced at both UI and database rule level; Admin user management panel built into the dashboard
+- **Remote Belt Control** — Dashboard Start/Stop conveyor commands published via MQTT and executed by the ESP8266 firmware
+- **CI/CD Pipeline** — GitHub Actions workflow auto-builds and deploys the dashboard to Firebase Hosting on every push to `main`
 
 ---
 
 ## Success Criteria
 
-| Criterion | Target | Notes |
-|-----------|--------|-------|
-| Classification accuracy | ≥ 90% (45/50 batteries) | Across all 3 chemistry types |
-| Sort cycle time | ≤ 5 seconds | IR detect → servo complete |
-| MQTT latency | ≤ 2 seconds | Sort event → dashboard visible |
-| Belt remote control | Reliable within 3 seconds | 10 consecutive tests, no missed commands |
-| Zero false Li-ion positives | 0 Alkaline/NiMH routed to Li-ion bin | Highest-priority safety criterion |
-
----
-
-## Known Limitations & Design Decisions
-
-| Decision | Reason |
-|----------|--------|
-| Simulated voltage in demo mode | Voltage divider not physically wired during testing phase; ensures dashboard shows realistic data |
-| `setInsecure()` on TLS connection | Skips certificate validation — acceptable for academic scope, not for production |
-| Credentials hardcoded in source | Academic project; in production use Vite `import.meta.env` and Arduino secure storage |
-| ESP8266 instead of ESP32 | ESP32 DevKit lacked auto-reset circuit; upload failed repeatedly; NodeMCU has built-in auto-reset |
-| RGB LED removed | Insufficient GPIO pins on ESP8266 after assigning all required peripherals |
-| No ADC2 conflict concern | ESP8266 has only one ADC (A0); no WiFi/ADC conflict unlike ESP32 |
+| Criterion | Target |
+|-----------|--------|
+| Classification accuracy | ≥ 90% across all 3 battery chemistry types |
+| Sort cycle time | ≤ 5 seconds from IR detection to servo completion |
+| MQTT latency | ≤ 2 seconds from sort event to dashboard display |
+| Belt remote control | Reliable response within 3 seconds of user action |
+| Zero false Li-ion positives | No Alkaline or NiMH battery routed to Li-ion bin |

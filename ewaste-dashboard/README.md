@@ -32,7 +32,7 @@ ewaste-dashboard/
 ├── index.html                   # HTML shell, loads Inter font
 ├── vite.config.js               # Vite + Vue plugin config
 ├── firebase.json                # Hosting config — SPA rewrite rule, dist/ public dir
-├── .firebaserc                  # Project alias: embedded-final-project-29234
+├── .firebaserc                  # Project alias binding
 └── package.json
 ```
 
@@ -73,26 +73,45 @@ npx firebase deploy --only hosting
 
 ---
 
-## Firebase Configuration
+## Configuration
 
-Located in `src/firebase.js`. Initializes one Firebase app instance shared across all components:
+### Firebase (`src/firebase.js`)
+
+Replace all placeholder values with your own Firebase project credentials obtained from the Firebase console:
 
 ```js
 const firebaseConfig = {
-  apiKey: "...",
-  authDomain: "embedded-final-project-29234.firebaseapp.com",
-  databaseURL: "https://embedded-final-project-29234-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "embedded-final-project-29234",
-  ...
+  apiKey:            "YOUR_API_KEY",
+  authDomain:        "YOUR_PROJECT_ID.firebaseapp.com",
+  databaseURL:       "https://YOUR_PROJECT_ID-default-rtdb.REGION.firebasedatabase.app",
+  projectId:         "YOUR_PROJECT_ID",
+  storageBucket:     "YOUR_PROJECT_ID.firebasestorage.app",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId:             "YOUR_APP_ID"
 }
 ```
 
-### Realtime Database Schema
+### MQTT (`src/App.vue`)
+
+Replace with your HiveMQ Cloud cluster details:
+
+```js
+mqtt.connect('wss://YOUR_HIVEMQ_CLUSTER_URL:8884/mqtt', {
+  username: 'YOUR_MQTT_USERNAME',
+  password: 'YOUR_MQTT_PASSWORD'
+})
+```
+
+> Never commit real credentials. Fill these in locally only.
+
+---
+
+## Realtime Database Schema
 
 ```
 /
 ├── battery_events/
-│   └── {pushId}/
+│   └── {auto-push-id}/
 │       ├── type:      "Li-ion" | "Alkaline" | "NiMH" | "Unknown"
 │       ├── voltage:   float (V) — simulated 0.00–1.50 in demo mode
 │       ├── magnetic:  boolean
@@ -107,17 +126,7 @@ const firebaseConfig = {
 
 ---
 
-## MQTT Connection
-
-Connects to HiveMQ Cloud via secure WebSocket (`wss://`, port 8884):
-
-```js
-// src/App.vue
-mqtt.connect('wss://<cluster>.hivemq.cloud:8884/mqtt', {
-  username: '...',
-  password: '...'
-})
-```
+## MQTT Topics
 
 | Topic | Direction | Format |
 |-------|-----------|--------|
@@ -155,7 +164,7 @@ App mounts
 | **Demo (current)** | ESP8266 firmware `simulatedVoltage()` | Random 0.00–1.50V |
 | **Production** | Voltage divider on A0 | Real battery terminal voltage |
 
-The dashboard receives and displays whatever voltage value arrives in the MQTT payload — no changes needed in the dashboard when switching between demo and production firmware.
+The dashboard receives and displays whatever voltage value arrives in the MQTT payload — no dashboard changes needed when switching between demo and production firmware.
 
 ### Production Voltage Divider Circuit
 
@@ -179,7 +188,7 @@ npx firebase deploy --only hosting
 
 Every push to `main` triggers `.github/workflows/firebase-deploy.yml`:
 
-```yaml
+```
 npm ci → npm run build → firebase deploy --only hosting --token $FIREBASE_TOKEN
 ```
 
@@ -189,13 +198,10 @@ Required secret in GitHub repository settings:
 |--------|-----------|
 | `FIREBASE_TOKEN` | Run `npx firebase login:ci` and copy the output token |
 
-Live URL: `https://embedded-final-project-29234.web.app`
-
 ---
 
 ## Development Notes
 
-- **Chart.js bundle size warning** — `mqtt` + `chart.js` + `firebase` = ~975KB bundle. Expected for this stack. Acceptable for an academic project.
-- **LiquidCrystal I2C AVR warning** — appears in Arduino IDE but is harmless; library works on ESP8266/ESP32.
-- **MQTT credentials in source** — acceptable for academic scope. In production, use environment variables via Vite's `import.meta.env`.
-- **Firebase security rules** — set RTDB rules to restrict role writes to admin users only (see root README).
+- **Bundle size** — `mqtt` + `chart.js` + `firebase` produces a ~975KB bundle. Expected for this stack given the real-time data requirements.
+- **LiquidCrystal I2C AVR warning** — appears in Arduino IDE but is harmless; library works on ESP8266.
+- **Firebase security rules** — apply RTDB rules from the root README to restrict role writes to admin users only.

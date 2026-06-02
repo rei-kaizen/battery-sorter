@@ -166,17 +166,51 @@ npm run dev
 
 Open `http://localhost:5173`
 
+### Configure Credentials
+
+Before running, fill in your own credentials in these files:
+
+**`ewaste-dashboard/src/firebase.js`** — replace with your Firebase project config:
+```js
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.REGION.firebasedatabase.app",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+}
+```
+
+**`ewaste-dashboard/src/App.vue`** — replace with your HiveMQ cluster details:
+```js
+mqtt.connect('wss://YOUR_HIVEMQ_CLUSTER_URL:8884/mqtt', {
+  username: 'YOUR_MQTT_USERNAME',
+  password: 'YOUR_MQTT_PASSWORD'
+})
+```
+
+**`control.ino`** — replace with your WiFi and MQTT credentials:
+```cpp
+const char* ssid        = "YOUR_WIFI_SSID";
+const char* password    = "YOUR_WIFI_PASSWORD";
+const char* mqtt_server = "YOUR_MQTT_SERVER_URL";
+const char* mqtt_user   = "YOUR_MQTT_USERNAME";
+const char* mqtt_pass   = "YOUR_MQTT_PASSWORD";
+```
+
 ### Firmware
 
 1. Install ESP8266 board package — add to Arduino IDE Board Manager URLs:
    ```
    http://arduino.esp8266.com/stable/package_esp8266com_index.json
    ```
-2. Install required libraries (Library Manager):
+2. Install required libraries via Library Manager:
    - `PubSubClient` by Nick O'Leary
    - `LiquidCrystal I2C` by Frank de Brabander
 3. Set board: **NodeMCU 1.0 (ESP-12E Module)**
-4. Fill in WiFi and MQTT credentials in `control.ino`
+4. Fill in credentials in `control.ino`
 5. Upload — no BOOT button required (NodeMCU has auto-reset circuit)
 
 ---
@@ -191,22 +225,8 @@ push to main → npm ci → npm run build → firebase deploy --only hosting
 
 **Required GitHub Secret:**
 
-| Secret Name | Value |
-|-------------|-------|
-| `FIREBASE_TOKEN` | Output of `npx firebase login:ci` |
+| Secret Name | How to Get |
+|-------------|-----------|
+| `FIREBASE_TOKEN` | Run `npx firebase login:ci` locally and copy the output token |
 
-Live URL: `https://embedded-final-project-29234.web.app`
-
----
-
-## Environment Configuration
-
-All credentials are hardcoded in source for this academic project. For production use, move these to environment variables:
-
-| Variable | Location | Description |
-|----------|----------|-------------|
-| Firebase config | `src/firebase.js` | API key, project ID, database URL |
-| MQTT broker URL | `src/App.vue` | HiveMQ WebSocket URL |
-| MQTT credentials | `src/App.vue` | Username and password |
-| WiFi SSID/pass | `control.ino` | Network credentials |
-| MQTT credentials | `control.ino` | Broker username and password |
+Add it at: **GitHub repo → Settings → Secrets and variables → Actions → New repository secret**
